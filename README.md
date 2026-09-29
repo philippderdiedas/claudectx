@@ -226,7 +226,7 @@ claudectx run work --dry-run
 
 **Important caveats:**
 
-- **Settings:** Profile scalar settings (model, env vars, permission mode) override global `~/.claude/settings.json`. Permission arrays (`allow`/`deny`) are merged — a profile cannot narrow permissions already granted globally.
+- **Settings:** The profile's `settings.json` replaces global `~/.claude/settings.json` for the session (`--setting-sources project,local` excludes the user source), so a globally active provider's `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` cannot leak in. Env vars that were inherited from the global `env` block (e.g. when launching from inside another Claude session) are dropped unless the profile sets them. Project and local settings still apply. Pass your own `-- --setting-sources ...` to override.
 - **CLAUDE.md:** The profile's `CLAUDE.md` is appended to the session system prompt. It is not a full replacement — your global `~/.claude/CLAUDE.md` remains active alongside it.
 - **MCP:** Only the profile's MCP servers are used (`--strict-mcp-config`). Global MCP servers from `~/.claude.json` are excluded for that session.
 - **Auth:** Authentication is not profile-scoped. `run` uses whatever Claude Code login is currently active.
@@ -602,7 +602,7 @@ claudectx stores each profile in `~/.claude/profiles/`:
 
 **`claudectx <name>` (persistent switch):** copies profile files to the active locations, creates a backup first, rolls back automatically on failure.
 
-**`claudectx run <name>` (session launch):** passes `--settings`, `--append-system-prompt-file`, and a generated `--mcp-config` directly to `claude`. Nothing is copied or overwritten. The temp MCP config is deleted after Claude exits.
+**`claudectx run <name>` (session launch):** passes `--settings` (with `--setting-sources project,local`), `--append-system-prompt-file`, and a generated `--mcp-config` directly to `claude`. Nothing is copied or overwritten. The temp MCP config is deleted after Claude exits.
 
 ---
 

@@ -460,6 +460,89 @@ func TestRunProfile_PassThroughArgsPreservedVerbatim(t *testing.T) {
 	}
 }
 
+// ── Generated args: setting sources ───────────────────────────────────────────
+
+// TestRunProfile_ExcludesUserSettingSource verifies the global settings.json is
+// not merged in, so a globally active provider (e.g. ANTHROPIC_BASE_URL) cannot
+// leak into a session for a profile that doesn't set it.
+func TestRunProfile_ExcludesUserSettingSource(t *testing.T) {
+	s, _ := setupRunTest(t)
+
+	p := profile.NewProfile("work")
+	saveProfile(t, s, p)
+
+	result, err := RunProfile(s, RunOptions{ProfileName: "work", DryRun: true})
+	if err != nil {
+		t.Fatalf("RunProfile failed: %v", err)
+	}
+
+	if got := argAfter(result.GeneratedArgs, "--setting-sources"); got != "project,local" {
+		t.Errorf("--setting-sources = %q, want %q (args: %v)", got, "project,local", result.GeneratedArgs)
+	}
+}
+
+// TestRunProfile_PassThroughSettingSourcesWins verifies a user-supplied
+// --setting-sources replaces the generated one instead of being duplicated.
+func TestRunProfile_PassThroughSettingSourcesWins(t *testing.T) {
+	for _, passThrough := range [][]string{
+		{"--setting-sources", "user,project"},
+		{"--setting-sources=user,project"},
+	} {
+		s, _ := setupRunTest(t)
+
+		p := profile.NewProfile("work")
+		saveProfile(t, s, p)
+
+		result, err := RunProfile(s, RunOptions{ProfileName: "work", ClaudeArgs: passThrough, DryRun: true})
+		if err != nil {
+			t.Fatalf("RunProfile failed: %v", err)
+		}
+
+		if containsFlag(result.GeneratedArgs, "project,local") {
+			t.Errorf("generated --setting-sources should be omitted when passed through, got: %v", result.GeneratedArgs)
+		}
+	}
+}
+
+// ── Child environment ─────────────────────────────────────────────────────────
+
+func TestRunEnv_DropsVarsInheritedFromGlobalSettings(t *testing.T) {
+	environ := []string{
+		"PATH=/usr/bin",
+		"ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic",
+		"ANTHROPIC_AUTH_TOKEN=zai-token",
+	}
+	globalEnv := map[string]string{
+		"ANTHROPIC_BASE_URL":   "https://api.z.ai/api/anthropic",
+		"ANTHROPIC_AUTH_TOKEN": "zai-token",
+	}
+
+	got := runEnv(environ, globalEnv, nil)
+
+	want := []string{"PATH=/usr/bin"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("runEnv = %v, want %v", got, want)
+	}
+}
+
+func TestRunEnv_KeepsUserExportedAndProfileVars(t *testing.T) {
+	environ := []string{
+		"ANTHROPIC_BASE_URL=https://proxy.example.com", // exported by the user, differs from global
+		"ANTHROPIC_AUTH_TOKEN=zai-token",               // matches global, but the profile sets it too
+	}
+	globalEnv := map[string]string{
+		"ANTHROPIC_BASE_URL":   "https://api.z.ai/api/anthropic",
+		"ANTHROPIC_AUTH_TOKEN": "zai-token",
+	}
+	profileEnv := map[string]string{"ANTHROPIC_AUTH_TOKEN": "other-token"}
+
+	got := runEnv(environ, globalEnv, profileEnv)
+
+	if strings.Join(got, "\n") != strings.Join(environ, "\n") {
+		t.Errorf("runEnv = %v, want %v", got, environ)
+	}
+}
+
 // ── Dry-run behaviour ──────────────────────────────────────────────────────────
 
 func TestRunProfile_DryRunDoesNotExecClaude(t *testing.T) {

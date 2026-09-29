@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/johnfox/claudectx/internal/config"
 	"github.com/johnfox/claudectx/internal/mcpconfig"
 	"github.com/johnfox/claudectx/internal/paths"
 	"github.com/johnfox/claudectx/internal/printer"
@@ -124,6 +125,14 @@ func RunProfile(s *store.Store, opts RunOptions) (RunResult, error) {
 	}
 	claudeArgs = append(claudeArgs, "--settings", settingsPath)
 
+	// --settings is merged on top of ~/.claude/settings.json rather than
+	// replacing it, so keys the profile omits (e.g. ANTHROPIC_BASE_URL from a
+	// globally active provider profile) would leak into the session. The
+	// profile is a full snapshot of user settings, so skip the user source.
+	if !hasFlag(opts.ClaudeArgs, "--setting-sources") {
+		claudeArgs = append(claudeArgs, "--setting-sources", "project,local")
+	}
+
 	// --append-system-prompt-file only when CLAUDE.md is non-empty.
 	if strings.TrimSpace(prof.ClaudeMD) != "" {
 		claudeMDPath, err := paths.ProfileFile(opts.ProfileName, "CLAUDE.md")
@@ -171,7 +180,17 @@ func RunProfile(s *store.Store, opts RunOptions) (RunResult, error) {
 
 	printer.Info("Running Claude with profile %q for this session only", opts.ProfileName)
 
-	exitCode, err := execClaude(claudeArgs)
+	globalSettingsPath, err := paths.SettingsFile()
+	if err != nil {
+		return result, fmt.Errorf("failed to resolve settings path: %w", err)
+	}
+	var profileEnv map[string]string
+	if prof.Settings != nil {
+		profileEnv = prof.Settings.Env
+	}
+	env := runEnv(os.Environ(), config.LoadSettingsOrEmpty(globalSettingsPath).Env, profileEnv)
+
+	exitCode, err := execClaude(claudeArgs, env)
 	result.ExitCode = exitCode
 
 	// Best-effort cleanup of temp MCP config after claude exits.
@@ -188,14 +207,44 @@ func RunProfile(s *store.Store, opts RunOptions) (RunResult, error) {
 	return result, nil
 }
 
-// execClaude runs the claude binary with the given args, inheriting stdio.
-// Returns the child exit code and any exec-level error (e.g. binary not found).
-func execClaude(args []string) (int, error) {
+// hasFlag reports whether args contain flag, either as "--flag" or "--flag=value".
+func hasFlag(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag || strings.HasPrefix(a, flag+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+// runEnv returns environ without variables that were inherited from the global
+// settings.json env block (same key and value) and that the profile does not
+// set itself. Claude Code exports settings env into its own process, so a
+// `claudectx run` started from inside a session would otherwise carry over
+// e.g. the active provider's ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN.
+func runEnv(environ []string, globalEnv, profileEnv map[string]string) []string {
+	out := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		k, v, _ := strings.Cut(kv, "=")
+		if gv, ok := globalEnv[k]; ok && gv == v {
+			if _, inProfile := profileEnv[k]; !inProfile {
+				continue
+			}
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+// execClaude runs the claude binary with the given args and environment,
+// inheriting stdio. Returns the child exit code and any exec-level error
+// (e.g. binary not found).
+func execClaude(args, env []string) (int, error) {
 	cmd := exec.Command("claude", args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
+	cmd.Env = env
 
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
